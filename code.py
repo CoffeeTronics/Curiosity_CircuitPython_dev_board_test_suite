@@ -95,13 +95,38 @@ def _breather():
     gc.collect()
     time.sleep(0.02)
 
+# In code.py, replace _free_display_everything() with:
+
 def _free_display_everything():
+    import gc, time, digitalio
     try:
         displayio.release_displays()
     except Exception:
         pass
+    # free common control pins used by the TFT on your rig
+    for name in ("D13", "LCD_CS"):
+        try:
+            dio = digitalio.DigitalInOut(getattr(board, name))
+            dio.direction = digitalio.Direction.INPUT
+            try:
+                dio.pull = None
+            except Exception:
+                pass
+            dio.deinit()
+        except Exception:
+            pass
+    # attempt to close the LCD SPI once displays are released
+    try:
+        spi = board.LCD_SPI()
+        try:
+            spi.deinit()
+        except Exception:
+            pass
+    except Exception:
+        pass
     gc.collect()
-    time.sleep(0.02)
+    time.sleep(0.03)
+
 
 def _free_resources_for_dac_adc():
     def _free_pin(name):
@@ -117,6 +142,46 @@ def _free_resources_for_dac_adc():
 
 def _fmt_list(lst):
     return ", ".join(lst) if lst else "None"
+
+# Helpers to free BLE pins cleanly
+def _pulse_ble_reset(active_low=True, ms=50, settle_ms=300):
+    import digitalio
+    pin = getattr(board, "BLE_CLR", None)
+    if not pin:
+        return
+    dio = digitalio.DigitalInOut(pin)
+    dio.direction = digitalio.Direction.OUTPUT
+    # idle
+    dio.value = True if active_low else False
+    time.sleep(0.01)
+    # pulse
+    dio.value = False if active_low else True
+    time.sleep(ms/1000.0)
+    # idle and settle
+    dio.value = True if active_low else False
+    dio.deinit()
+    time.sleep(settle_ms/1000.0)
+
+def _free_ble_pins():
+    import digitalio
+    for name in ("BLE_TX", "BLE_RX"):
+        pin = getattr(board, name, None)
+        if not pin:
+            continue
+        try:
+            dio = digitalio.DigitalInOut(pin)
+            # Put pad in a benign state, then release
+            dio.direction = digitalio.Direction.INPUT
+            try:
+                dio.pull = None
+            except Exception:
+                pass
+            dio.deinit()
+        except Exception:
+            pass
+    # Small settle + GC
+    gc.collect()
+    time.sleep(0.02)
 
 # ----------------------------- Banner / Pin list -----------------------------
 print()
@@ -234,12 +299,60 @@ print(f"\nCapacitive Touch Button Test: {RESULT}")
 print("Pins tested:", PINS_USED, "\n")
 _breather()
 
+
+# --- BLE UART ECHO TEST (run before GPIO/pin-group) ---
+print("@)}---^-----  BLE UART ECHO TEST  -----^---{(@)")
+# Make sure the pads are free and the module is quiet
+_free_ble_pins()
+_pulse_ble_reset(active_low=True, ms=40, settle_ms=150)
+
+_result = boardtest_ble_uart.run_test(
+    PINS,
+    baudrate=115200,
+    connect_timeout_s=10,     # short connect wait; we accept any RX as link
+    user_timeout_s=120,
+    active_state_query=False, # do not spam AT+STATE? in transparent mode
+    do_reset=False,           # we already pulsed reset above (optional)
+    reset_active_low=True,
+    quiet_shutdown=True,      # driver will hold module in reset before deinit
+    quiet_hold_ms=150,
+)
+
+# Unpack & summarize safely (bounded text already in the driver)
+if isinstance(_result, tuple) and len(_result) == 3:
+    STATUS, PINS_USED, INFO = _result
+else:
+    STATUS, PINS_USED = _result
+    INFO = {"received": ""}
+
+rx = INFO.get("received", "") or ""
+TEST_RESULTS["BLE UART Echo Test"] = STATUS + (f' | RX="{rx}"' if rx else "")
+PINS_TESTED.append(PINS_USED)
+print(f'BLE UART Echo Test: {TEST_RESULTS["BLE UART Echo Test"]}')
+print("Pins tested:", PINS_USED)
+print()
+
+# Extra belt & suspenders: free the pads again in case the module is chatty
+_free_ble_pins()
+gc.collect()
+time.sleep(0.03)
+
+# Run Pin Group Tests - Write & Read (exclude BLE pins so D0/D1 aren’t re-grabbed)
+print("\n@)}---^-----  DIGITAL PIN WRITE / READ TEST  -----^---{(@)")
+PIN_GROUP_SET = [p for p in PINS if p not in ("BLE_TX", "BLE_RX", "BLE_CLR")]
+RESULT = boardtest_pin_group_tester.run_test(PIN_GROUP_SET, cycles=3, step_delay=0.1)
+print(f"Pin Pair Test: {RESULT[0]}")
+print("Pins tested:", RESULT[1])
+TEST_RESULTS["Pin Pair Test"] = RESULT[0]
+PINS_TESTED.append(RESULT[1])
+
+'''
 # Digital Pin Write/Read (NON-interactive) — pass a SAFE list
 print("\n@)}---^-----  DIGITAL PIN WRITE / READ TEST  -----^---{(@)")
 RESERVED = {
     "SDA","SCL","NEOPIXEL","LED","CAN_TX","CAN_RX","D13",
     "QSPI_CS","QSPI_SCK","QSPI_IO0","QSPI_IO1","QSPI_IO2","QSPI_IO3",
-    "SD_MOSI","SD_MISO","SD_SCK","SD_CS",
+    "SD_MOSI","SD_MISO","SD_SCK","SD_CS", "D13"
 }
 SAFE_PINS = [p for p in PINS if p not in RESERVED]
 with _NoInputCtx():
@@ -249,6 +362,7 @@ print("Pins tested:", RESULT[1])
 TEST_RESULTS["Pin Pair Test"] = RESULT[0]
 PINS_TESTED.append(RESULT[1])
 _breather()
+'''
 
 # DAC/ADC sweep (NON-interactive)
 print("\n@)}---^-----  DAC/ADC SWEEP TEST  -----^---{(@)")
@@ -286,27 +400,9 @@ finally:
     _free_resources_for_dac_adc()
     _breather()
 
-# BLE UART echo (interactive) — **no reset pulse**
-print("@)}---^-----  BLE UART ECHO TEST  -----^---{(@)")
-_result = boardtest_ble_uart.run_test(
-    PINS, baudrate=115200, echo_timeout_s=120, do_reset=False, reset_active_low=True
-)
 
-if isinstance(_result, tuple) and len(_result) == 3:
-    STATUS, PINS_USED, INFO = _result
-else:
-    STATUS, PINS_USED = _result
-    INFO = {"received": ""}
 
-received_text = INFO.get("received", "")
-rx_fragment = f' | RX="{received_text}"' if received_text else ""
-TEST_RESULTS["BLE UART Echo Test"] = STATUS + rx_fragment
-PINS_TESTED.append(PINS_USED)
 
-print(f'BLE UART Echo Test: {STATUS}{rx_fragment}')
-print("Pins tested:", PINS_USED)
-print()
-_breather()
 
 # ------------------------------ Summary --------------------------------
 print("@)}---^-----  TEST RESULTS  -----^---{(@)\n")
