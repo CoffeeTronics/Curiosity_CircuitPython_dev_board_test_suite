@@ -15,3 +15,8 @@ This test suite tests the following hardware & peripherals:
 - ADC input sweep
 - SPI bus for SD Card on Ruler
 - I2C bus
+
+This test code is based on Shawn Hymel's boardtest suite:
+https://github.com/adafruit/Adafruit_CircuitPython_BoardTest
+but greatly expands on it to provide tests specific to the 
+Microchip Curiosity CircuitPython dev board.
