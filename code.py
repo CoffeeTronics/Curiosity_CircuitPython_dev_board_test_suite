@@ -18,6 +18,13 @@ import microcontroller
 import gc
 from analogio import AnalogIn, AnalogOut
 
+import microcontroller
+
+# Get the unique ID as a byte array
+unique_id_bytes = microcontroller.cpu.uid
+# Convert the byte array to a hexadecimal string for readability
+unique_id_hex = ''.join(['{:02x}'.format(b) for b in unique_id_bytes])
+
 # NEW: safe no-input wrapper for non-interactive tests
 class _NoInputCtx:
     """Temporarily replace builtins.input so tests don't block for Enter."""
@@ -430,3 +437,7 @@ print("The following pins were NOT tested:", end=" ")
 for pin in NOT_TESTED:
     print(pin, end=" ")
 print("\n")
+
+# print MCU serial number
+print(f"MCU Unique ID (Serial Number): {unique_id_hex}")
+
