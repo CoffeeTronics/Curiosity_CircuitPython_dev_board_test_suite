@@ -20,11 +20,6 @@ from analogio import AnalogIn, AnalogOut
 
 import microcontroller
 
-# Get the unique ID as a byte array
-unique_id_bytes = microcontroller.cpu.uid
-# Convert the byte array to a hexadecimal string for readability
-unique_id_hex = ''.join(['{:02x}'.format(b) for b in unique_id_bytes])
-
 # NEW: safe no-input wrapper for non-interactive tests
 class _NoInputCtx:
     """Temporarily replace builtins.input so tests don't block for Enter."""
@@ -189,6 +184,15 @@ def _free_ble_pins():
     # Small settle + GC
     gc.collect()
     time.sleep(0.02)
+
+#-------------------------------MCU Serial Number-----------------------------
+# Get the unique ID as a byte array
+unique_id_bytes = microcontroller.cpu.uid
+# Convert the byte array to a hexadecimal string for readability
+unique_id_hex = ''.join(['{:02x}'.format(b) for b in unique_id_bytes])
+# print MCU serial number
+print(f"\n\nMCU Unique ID (Serial Number): {unique_id_hex}")
+
 
 # ----------------------------- Banner / Pin list -----------------------------
 print()
@@ -402,12 +406,42 @@ try:
     print(f"Display Sprite/Text Test: {RESULT[0]}")
     print("Info:", RESULT[1])
     print()
+# right after the display test's try/finally:
 finally:
+    try:
+        # Stop any auto refresh and detach the root group first
+        if hasattr(board, "DISPLAY"):
+            try:
+                board.DISPLAY.auto_refresh = False
+            except Exception:
+                pass
+            try:
+                board.DISPLAY.root_group = None
+            except Exception:
+                pass
+            try:
+                board.DISPLAY.refresh()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Now fully release the display bus & pins
+    _free_display_everything()
+
+    # If you also used DAC/ADC earlier, free those too
+    _free_resources_for_dac_adc()
+
+    gc.collect()
+    time.sleep(0.03)
+
+
+#finally:
     #_free_display_everything()
     #_free_resources_for_dac_adc()
     #_breather()
-    gc.collect()
-    time.sleep(0.03)
+    #gc.collect()
+    #time.sleep(0.03)
 
 
 # ------------------------------ Summary --------------------------------
@@ -437,7 +471,4 @@ print("The following pins were NOT tested:", end=" ")
 for pin in NOT_TESTED:
     print(pin, end=" ")
 print("\n")
-
-# print MCU serial number
-print(f"MCU Unique ID (Serial Number): {unique_id_hex}")
 
