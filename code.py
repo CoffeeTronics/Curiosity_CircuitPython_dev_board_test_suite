@@ -396,12 +396,11 @@ try:
     print("Info:", RESULT[1])
     print()
 finally:
-    _free_display_everything()
-    _free_resources_for_dac_adc()
-    _breather()
-
-
-
+    #_free_display_everything()
+    #_free_resources_for_dac_adc()
+    #_breather()
+    gc.collect()
+    time.sleep(0.03)
 
 
 # ------------------------------ Summary --------------------------------
