@@ -162,7 +162,61 @@ def _pulse_ble_reset(active_low=True, ms=50, settle_ms=300):
     # idle and settle
     dio.value = True if active_low else False
     dio.deinit()
-    time.sleep(settle_ms/1000.0)
+def _ble_enable_status_led(baudrate=115200, active_low_reset=True):
+    """Enter RN-style command mode, enable status LED, reboot, and clean up.
+    Uses BLE_TX, BLE_RX, BLE_CLR pins defined on the board. All UART writes use bytes.
+"""
+    import digitalio, time
+    from busio import UART
+
+    tx = getattr(board, "BLE_TX", None)
+    rx = getattr(board, "BLE_RX", None)
+    clr = getattr(board, "BLE_CLR", None)
+    if not (tx and rx and clr):
+        raise RuntimeError("BLE pins (BLE_TX, BLE_RX, BLE_CLR) not defined on this board")
+
+    # Prepare reset pin
+    ble_reset = digitalio.DigitalInOut(clr)
+    ble_reset.direction = digitalio.Direction.OUTPUT
+    # idle state
+    ble_reset.value = True if active_low_reset else False
+    time.sleep(0.01)
+
+    # Pulse reset low -> high (or active -> idle) and let it boot
+    ble_reset.value = False if active_low_reset else True
+    time.sleep(0.2)
+    ble_reset.value = True if active_low_reset else False
+    time.sleep(1.0)  # boot time
+
+    # UART to BLE
+    ble = UART(tx, rx, baudrate=baudrate, timeout=0.2, receiver_buffer_size=256)
+    try:
+        # Enter command mode: "$$$" + CRLF (bytes)
+        for _ in range(3):
+            ble.write(b"$")
+            time.sleep(0.2)
+        ble.write(b"\\r\\n")
+        time.sleep(0.5)
+        _ = ble.read(32)
+
+        # Enable status LED (device-specific command)
+        ble.write(b"SR,0001\\r\\n")
+        time.sleep(0.5)
+        _ = ble.read(32)
+
+        # Reboot command
+        ble.write(b"R,1\\r\\n")
+        time.sleep(0.5)
+        _ = ble.read(32)
+    finally:
+        try:
+            ble.deinit()
+        except Exception:
+            pass
+        try:
+            ble_reset.deinit()
+        except Exception:
+            pass
 
 def _free_ble_pins():
     import digitalio
@@ -310,6 +364,12 @@ print(f"\nCapacitive Touch Button Test: {RESULT}")
 print("Pins tested:", PINS_USED, "\n")
 _breather()
 
+# --- Enable BLE Status LED ---
+try:
+    _ble_enable_status_led(baudrate=115200, active_low_reset=True)
+    print("BLE status LED enabled via command mode and rebooted.")
+except Exception as e:
+    print("Skipping manual BLE LED enable:", e)
 
 # --- BLE UART ECHO TEST (run before GPIO/pin-group) ---
 print("@)}---^-----  BLE UART ECHO TEST  -----^---{(@)")
@@ -347,7 +407,7 @@ print()
 _free_ble_pins()
 gc.collect()
 time.sleep(0.03)
-
+'''
 # Run Pin Group Tests - Write & Read (exclude BLE pins so D0/D1 aren’t re-grabbed)
 print("\n@)}---^-----  DIGITAL PIN WRITE / READ TEST  -----^---{(@)")
 PIN_GROUP_SET = [p for p in PINS if p not in ("BLE_TX", "BLE_RX", "BLE_CLR")]
@@ -356,7 +416,7 @@ print(f"Pin Pair Test: {RESULT[0]}")
 print("Pins tested:", RESULT[1])
 TEST_RESULTS["Pin Pair Test"] = RESULT[0]
 PINS_TESTED.append(RESULT[1])
-
+'''
 '''
 # Digital Pin Write/Read (NON-interactive) — pass a SAFE list
 print("\n@)}---^-----  DIGITAL PIN WRITE / READ TEST  -----^---{(@)")
@@ -374,6 +434,46 @@ TEST_RESULTS["Pin Pair Test"] = RESULT[0]
 PINS_TESTED.append(RESULT[1])
 _breather()
 '''
+
+# Run Pin Group Tests - Write & Read (exclude ALL reserved/system pins)
+print("\n@)}---^-----  DIGITAL PIN WRITE / READ TEST  -----^---{(@)")
+
+# Build a conservative reserved set
+RESERVED = {
+    # Buses & well-known special pins
+    "SDA","SCL","NEOPIXEL","LED","DAC",
+    "CAN_TX","CAN_RX","CAN_STANDBY",
+    "DEBUG_TX","DEBUG_RX",
+    # Onboard SPI/QSPI/SD lines
+    "QSPI_CS","QSPI_SCK","QSPI_IO0","QSPI_IO1","QSPI_IO2","QSPI_IO3",
+    "SD_MOSI","SD_MISO","SD_SCK","SD_CS",
+    # Some boards alias D13 to LED/SCK; keep it out
+    "D13",
+    # BLE control/UART to keep module quiet
+    "BLE_TX","BLE_RX","BLE_CLR",
+}
+
+# Heuristic filter: skip any pin names that *look* like display or storage lines
+def _is_reserved_name(name: str) -> bool:
+    bad_substrings = ("QSPI", "SD_", "LCD", "TFT", "DISPLAY")
+    return any(sub in name for sub in bad_substrings)
+
+PIN_GROUP_SET = [p for p in PINS if (p not in RESERVED and not _is_reserved_name(p))]
+
+# If nothing is left, bail out gracefully
+if not PIN_GROUP_SET:
+    print("Pin Pair Test: SKIPPED (no safe pins available)")
+    TEST_RESULTS["Pin Pair Test"] = "Skipped (no safe pins)"
+    PINS_TESTED.append([])
+else:
+    RESULT = boardtest_pin_group_tester.run_test(PIN_GROUP_SET, cycles=3, step_delay=0.1)
+    print(f"Pin Pair Test: {RESULT[0]}")
+    print("Pins tested:", RESULT[1])
+    TEST_RESULTS["Pin Pair Test"] = RESULT[0]
+    PINS_TESTED.append(RESULT[1])
+
+_breather()
+
 
 # DAC/ADC sweep (NON-interactive)
 print("\n@)}---^-----  DAC/ADC SWEEP TEST  -----^---{(@)")
@@ -394,7 +494,7 @@ print(f"DAC/ADC Sweep Test: {status}")
 print("Pins tested:", pins_used)
 print()
 _breather()
-
+'''
 # Display sprite/text (interactive) — cleans up internally
 print("@)}---^-----  DISPLAY SPRITE/TEXT TEST  -----^---{(@)")
 try:
@@ -434,6 +534,27 @@ finally:
 
     gc.collect()
     time.sleep(0.03)
+'''
+# Display sprite/text (interactive) — minimal cleanup to avoid double-release
+print("@)}---^-----  DISPLAY SPRITE/TEXT TEST  -----^---{(@)")
+try:
+    RESULT = boardtest_display.run_test(
+        PINS, vx=1, vy=1, frame_delay=0.04,
+        motion_prompt_delay_s=1.0, prompt_timeout_s=None
+    )
+    TEST_RESULTS["Display Sprite/Text Test"] = RESULT[0]
+    PINS_TESTED.append([])
+    print(f"Display Sprite/Text Test: {RESULT[0]}")
+    print("Info:", RESULT[1])
+    print()
+finally:
+    # Only release once, and don't touch board.DISPLAY at all.
+    try:
+        displayio.release_displays()
+    except Exception:
+        pass
+    gc.collect()
+    time.sleep(0.03)
 
 
 #finally:
@@ -471,4 +592,3 @@ print("The following pins were NOT tested:", end=" ")
 for pin in NOT_TESTED:
     print(pin, end=" ")
 print("\n")
-
